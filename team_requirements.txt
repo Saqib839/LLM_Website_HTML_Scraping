@@ -1,0 +1,8 @@
+beautifulsoup4>=4.12.2
+requests>=2.28
+transformers>=4.40.0
+torch>=2.0.0
+sentencepiece>=0.1.98
+
+# Note: Installing torch may pick a heavy download. If you only want to extract raw text
+# and not run an LLM locally, you don't need to install transformers/torch.
