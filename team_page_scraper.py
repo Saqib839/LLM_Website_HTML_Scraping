@@ -110,11 +110,12 @@ def fetch_url(url, timeout=20):
 
 def clean_text_content(html_text):
     """
-    Extract and clean HTML text with structure preservation:
+    Extract and clean HTML text with structure preservation and deduplication:
     1. Remove scripts, styles, comments
     2. Preserve paragraph and section breaks
-    3. Remove language keywords and extra whitespace
-    4. Return clean, readable text content
+    3. Remove duplicate consecutive blocks
+    4. Remove language keywords and extra whitespace
+    5. Return clean, readable text content
     """
     soup = BeautifulSoup(html_text, "html.parser")
     
@@ -144,8 +145,16 @@ def clean_text_content(html_text):
             if txt and len(txt) > 2:
                 texts.append(txt)
     
+    # DEDUPLICATION: Remove consecutive duplicate blocks
+    deduped = []
+    for txt in texts:
+        # Skip if this is the same as the last added text (consecutive duplicate)
+        if deduped and deduped[-1] == txt:
+            continue
+        deduped.append(txt)
+    
     # Join with newlines to preserve logical breaks
-    content = "\n".join(texts)
+    content = "\n".join(deduped)
     
     # Remove language keywords and programming-related noise
     noise_patterns = [
@@ -164,6 +173,24 @@ def clean_text_content(html_text):
     content = content.strip()
     
     return content
+
+# --- EXTRA GENERIC CLEANING FUNCTION ---
+def extra_clean_text_blocks(text):
+    """
+    Remove boilerplate, navigation, copyright, social media, and other non-content text.
+    Comment out the call to this function to disable extra cleaning.
+    """
+    patterns = [
+        r"(?i)\b(home|about|contact|privacy|terms|login|register|menu|search|map|location|hours|appointment|book now|request appointment|call us|fax|email|follow us|facebook|twitter|instagram|linkedin|youtube|pinterest|©|copyright|all rights reserved|powered by|designed by)\b",
+        r"(?i)site map|back to top|skip to content|cookie policy|accessibility",
+        r"\d{3}-\d{3}-\d{4}",  # phone numbers
+        r"\b([A-Z]{2,}\s*){2,}\b",  # all-caps lines (often navigation)
+    ]
+    for pat in patterns:
+        text = re.sub(pat, "", text)
+    # Remove excessive blank lines
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    return text.strip()
 
 
 def extract_site_documents(url):
@@ -210,8 +237,8 @@ def extract_site_documents(url):
 
 def visible_text_from_soup(soup):
     """
-    Extract visible text from soup with structure preservation.
-    Returns text with line breaks between logical sections.
+    Extract visible text from soup with structure preservation and deduplication.
+    Returns text with line breaks between logical sections (no duplicate blocks).
     """
     # Remove scripts/styles and comments
     for tag in soup(["script", "style", "noscript", "template", "meta", "link", "nav"]):
@@ -234,8 +261,17 @@ def visible_text_from_soup(soup):
             if txt and len(txt) > 2:
                 texts.append(txt)
     
+    # DEDUPLICATION: Remove consecutive duplicate blocks
+    deduped = []
+    seen_texts = set()
+    for txt in texts:
+        # Skip if we just added this exact text (consecutive duplicate)
+        if deduped and deduped[-1] == txt:
+            continue
+        deduped.append(txt)
+    
     # Join with newlines to preserve sections
-    content = "\n".join(texts)
+    content = "\n".join(deduped)
     
     # Clean up noise patterns but preserve readability
     noise_patterns = [
@@ -246,9 +282,9 @@ def visible_text_from_soup(soup):
     for pattern in noise_patterns:
         content = re.sub(pattern, "", content, flags=re.IGNORECASE | re.MULTILINE)
     
-    # Clean excessive newlines
-    content = re.sub(r"\n\s*\n+", "\n", content)
-    content = re.sub(r"[ \t]+", " ", content)
+    # Clean excessive newlines but keep logical breaks
+    content = re.sub(r"\n\s*\n+", "\n", content)  # Collapse multiple blank lines to one
+    content = re.sub(r"[ \t]+", " ", content)      # Collapse spaces/tabs within lines
     content = content.strip()
     
     return content
@@ -516,6 +552,7 @@ def main():
             continue
         
         cleaned_text = site_doc.get("page_text", "")
+        cleaned_text = extra_clean_text_blocks(cleaned_text)
         print(f"✓ Extracted text: {len(cleaned_text)} characters")
         
         # Step 2 & 3: Already done in extract_site_documents (cleaning and returning cleaned text)
