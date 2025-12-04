@@ -110,56 +110,57 @@ def fetch_url(url, timeout=20):
 
 def clean_text_content(html_text):
     """
-    Extract and clean HTML text:
+    Extract and clean HTML text with structure preservation:
     1. Remove scripts, styles, comments
-    2. Remove language keywords and extra whitespace
-    3. Return clean text content
+    2. Preserve paragraph and section breaks
+    3. Remove language keywords and extra whitespace
+    4. Return clean, readable text content
     """
     soup = BeautifulSoup(html_text, "html.parser")
     
     # Remove scripts/styles and comments
-    for tag in soup(["script", "style", "noscript", "template", "meta", "link"]):
+    for tag in soup(["script", "style", "noscript", "template", "meta", "link", "nav"]):
         tag.decompose()
     
     # Remove HTML comments
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
     
-    # Get text content
+    # Extract text with structure preservation
     texts = []
-    for elem in soup.find_all(string=True):
-        txt = elem.strip()
-        if not txt:
+    for tag in soup.find_all(["p", "div", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "li", "td", "th", "span", "a"]):
+        # Skip if tag is inside a removed container or empty
+        if not tag.string and not tag.get_text(strip=True):
             continue
-        # Skip tiny fragments
-        if len(txt) < 2:
-            continue
-        texts.append(txt)
+        
+        text = tag.get_text(strip=True)
+        if text and len(text) > 2:
+            texts.append(text)
     
-    # Join and clean excessive whitespace
-    content = " ".join(texts)
+    # If structured extraction yielded nothing, fall back to all text
+    if not texts:
+        for elem in soup.find_all(string=True):
+            txt = elem.strip()
+            if txt and len(txt) > 2:
+                texts.append(txt)
+    
+    # Join with newlines to preserve logical breaks
+    content = "\n".join(texts)
     
     # Remove language keywords and programming-related noise
     noise_patterns = [
-        r"\bjavascript\b",
-        r"\bjquery\b",
-        r"\bcss\b",
-        r"\bhtml\b",
-        r"\bxml\b",
-        r"\bvar\b",
-        r"\bfunction\b",
-        r"\bwindow\b",
-        r"\bdocument\b",
-        r"\bcookie\b",
-        r"\bsession\b",
+        r"\b(javascript|jquery|css|html|xml|var|function|window|document|cookie|session)\b",
         r"\btitle\b\s*[>:]",
+        r"^(©|All rights reserved|Designed by|Powered by|Follow us)",
+        r"(facebook|twitter|instagram|linkedin|youtube|pinterest|social media)",
     ]
     
     for pattern in noise_patterns:
-        content = re.sub(pattern, "", content, flags=re.IGNORECASE)
+        content = re.sub(pattern, "", content, flags=re.IGNORECASE | re.MULTILINE)
     
-    # Collapse multiple spaces/newlines
-    content = re.sub(r"\s+", " ", content)
+    # Clean up excessive newlines but preserve single breaks
+    content = re.sub(r"\n\s*\n+", "\n", content)  # Remove multiple blank lines
+    content = re.sub(r"[ \t]+", " ", content)      # Collapse spaces/tabs within lines
     content = content.strip()
     
     return content
@@ -167,20 +168,145 @@ def clean_text_content(html_text):
 
 def extract_site_documents(url):
     """
-    Extract and clean HTML text from URL.
-    Returns cleaned text content only (no profile link following).
+    Extract and clean HTML text from URL with optional profile following.
+    Returns cleaned text content with structure preserved.
     """
     html = fetch_url(url)
     if not html:
         return None
     
-    # Clean the HTML and extract text
-    cleaned_text = clean_text_content(html)
+    soup = BeautifulSoup(html, "html.parser")
+    
+    # Extract main page text with structure
+    main_text = visible_text_from_soup(soup)
+    
+    # Optionally find and follow profile links
+    profiles = find_profile_links(soup, url)
+    profile_texts = []
+    for p in profiles:
+        if p == url:
+            continue
+        html_p = fetch_url(p)
+        if not html_p:
+            continue
+        soup_p = BeautifulSoup(html_p, "html.parser")
+        profile_text = visible_text_from_soup(soup_p)
+        if profile_text:
+            profile_texts.append({"url": p, "text": profile_text})
+    
+    # Combine main text and profiles
+    combined_text = main_text
+    if profile_texts:
+        profile_section = "\n\n=== PROFILES ===\n\n"
+        for prof in profile_texts:
+            profile_section += f"[Source: {prof['url']}]\n{prof['text']}\n\n"
+        combined_text = combined_text + "\n" + profile_section
     
     return {
         "page_url": url,
-        "page_text": cleaned_text
+        "page_text": combined_text
     }
+
+
+def visible_text_from_soup(soup):
+    """
+    Extract visible text from soup with structure preservation.
+    Returns text with line breaks between logical sections.
+    """
+    # Remove scripts/styles and comments
+    for tag in soup(["script", "style", "noscript", "template", "meta", "link", "nav"]):
+        tag.decompose()
+    
+    for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+        comment.extract()
+    
+    # Extract text from structural elements
+    texts = []
+    for tag in soup.find_all(["p", "div", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "li", "td", "th", "span"]):
+        txt = tag.get_text(strip=True)
+        if txt and len(txt) > 2:
+            texts.append(txt)
+    
+    # Fallback: if no structured text found, get all text
+    if not texts:
+        for elem in soup.find_all(string=True):
+            txt = elem.strip()
+            if txt and len(txt) > 2:
+                texts.append(txt)
+    
+    # Join with newlines to preserve sections
+    content = "\n".join(texts)
+    
+    # Clean up noise patterns but preserve readability
+    noise_patterns = [
+        r"\b(javascript|jquery|css|html|xml|var|function|window|document)\b",
+        r"^(©|All rights reserved|Designed by|Powered by)",
+    ]
+    
+    for pattern in noise_patterns:
+        content = re.sub(pattern, "", content, flags=re.IGNORECASE | re.MULTILINE)
+    
+    # Clean excessive newlines
+    content = re.sub(r"\n\s*\n+", "\n", content)
+    content = re.sub(r"[ \t]+", " ", content)
+    content = content.strip()
+    
+    return content
+
+
+def find_profile_links(soup, base_url):
+    """
+    Find links to team member profiles using heuristic patterns.
+    Returns list of full URLs.
+    """
+    links = set()
+    candidates = []
+    patterns = [r"doctor", r"dr\b", r"team", r"staff", r"profile", r"provider", r"physician", r"bio", r"practitioner"]
+    
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if href.startswith("mailto:") or href.startswith("#"):
+            continue
+        full = urljoin(base_url, href)
+        text = (a.get_text(" ") or "").lower()
+        
+        for p in patterns:
+            if re.search(p, href, re.I) or re.search(p, text, re.I):
+                candidates.append(full)
+                break
+    
+    # Find links in class-based containers
+    for cls in ["team", "staff", "doctors", "providers", "profiles", "physicians"]:
+        try:
+            for block in soup.select(f".{cls}"):
+                for a in block.find_all("a", href=True):
+                    href = a["href"].strip()
+                    if not href.startswith("mailto:") and not href.startswith("#"):
+                        links.add(urljoin(base_url, href))
+        except Exception:
+            pass
+    
+    links.update(candidates)
+    
+    # Filter to same domain
+    base_net = urlparse(base_url).netloc
+    filtered = []
+    for u in links:
+        try:
+            if urlparse(u).netloc == base_net:
+                filtered.append(u)
+        except Exception:
+            pass
+    
+    # Deduplicate while preserving order
+    seen = set()
+    out = []
+    for u in filtered:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    
+    return out
 
 
 def init_llm(model_name="meta-llama/Llama-3.2-3B-Instruct"):
@@ -407,7 +533,7 @@ def main():
         print(f"✓ Saved raw cleaned text to: {raw_path}")
         
         # Step 4: Pass to Llama-3.2-3B
-        print(f"🔄 Querying Llama-3.2-3B for extraction...")
+        print(f"🔄 Querying {args.model} for extraction...")
         people = ask_llm_for_extraction(pipe, cleaned_text, url)
         
         if not people:
