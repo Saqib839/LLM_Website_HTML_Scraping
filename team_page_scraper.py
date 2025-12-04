@@ -3,21 +3,28 @@
 team_page_scraper.py
 
 Reads team page URLs from a CSV (one URL per line, headerless is supported),
-scrapes each page and any linked profile/sub-pages for individual doctors/staff,
-then uses a free LLM (default: Hugging Face `google/flan-t5-small`) to request
-a structured JSON response for the site's people data.
+scrapes each page, cleans the HTML text, saves raw text files, then passes
+them to Llama-3.2-3B for structured extraction.
 
 Usage:
-  python team_page_scraper.py --input team_page/sample_input.csv --output output/team_pages_results.jsonl
+  python team_page_scraper.py --input team_page/sample_input.csv --output output/result_{timestamp}.csv
+
+Steps:
+1. Extract HTML text from each URL
+2. Clean: remove scripts, styles, comments, and extra whitespace
+3. Save raw cleaned text to raw_output folder (named same as website)
+4. Pass cleaned text to Llama-3.2-3B LLM and get response
+5. Save/append response to output/results_{timestamp}.csv
 
 Notes:
-- This script tries to use `transformers` + `google/flan-t5-small` which is free
-  via Hugging Face model hub. The model will be downloaded automatically if
-  internet access is available. If the model or transformers is unavailable,
-  the script falls back to saving raw extracted text files under `output/`.
+- Uses Llama-3.2-3B from Hugging Face
+- No heuristic extraction, pure LLM-based
+- Requires transformers and torch libraries
 """
 import argparse
 import json
+import ast
+import io
 import os
 import re
 from urllib.parse import urljoin, urlparse
@@ -28,7 +35,8 @@ import csv
 from datetime import datetime
 
 try:
-    from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+    # from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM, AutoTokenizer, TextGenerationPipeline
     TF_AVAILABLE = True
 except Exception:
     TF_AVAILABLE = False
@@ -100,14 +108,25 @@ def fetch_url(url, timeout=20):
     return None
 
 
-def visible_text_from_soup(soup):
+def clean_text_content(html_text):
+    """
+    Extract and clean HTML text:
+    1. Remove scripts, styles, comments
+    2. Remove language keywords and extra whitespace
+    3. Return clean text content
+    """
+    soup = BeautifulSoup(html_text, "html.parser")
+    
     # Remove scripts/styles and comments
-    for tag in soup(["script", "style", "noscript", "template"]):
+    for tag in soup(["script", "style", "noscript", "template", "meta", "link"]):
         tag.decompose()
+    
+    # Remove HTML comments
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
+    
+    # Get text content
     texts = []
-    # Use string=True per deprecation guidance
     for elem in soup.find_all(string=True):
         txt = elem.strip()
         if not txt:
@@ -116,130 +135,193 @@ def visible_text_from_soup(soup):
         if len(txt) < 2:
             continue
         texts.append(txt)
-    return "\n".join(texts)
-
-
-def find_profile_links(soup, base_url):
-    links = set()
-    candidates = []
-    # Heuristic patterns
-    patterns = [r"doctor", r"dr\b", r"team", r"staff", r"profile", r"provider", r"physician", r"bio", r"practitioner"]
-    for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
-        if href.startswith("mailto:"):
-            continue
-        full = urljoin(base_url, href)
-        text = (a.get_text(" ") or "").lower()
-        # check anchor text or href for patterns
-        for p in patterns:
-            if re.search(p, href, re.I) or re.search(p, text, re.I):
-                candidates.append(full)
-                break
-    # also try to find links inside blocks with class names
-    for cls in ["team", "staff", "doctors", "providers", "profiles", "physicians"]:
-        # Use a safe CSS class selector (e.g. .team) and fallback to attribute scan
-        try:
-            for block in soup.select(f".{cls}"):
-                for a in block.find_all("a", href=True):
-                    links.add(urljoin(base_url, a["href"]))
-        except Exception:
-            # Fallback: find elements whose class attribute contains the token
-            for block in soup.find_all(attrs={"class": lambda v: v and cls in " ".join(v) if isinstance(v, (list, tuple)) else (cls in v)}):
-                for a in block.find_all("a", href=True):
-                    links.add(urljoin(base_url, a["href"]))
-    links.update(candidates)
-    # Filter to same domain and remove duplicates
-    base_net = urlparse(base_url).netloc
-    filtered = []
-    for u in links:
-        try:
-            if urlparse(u).netloc and urlparse(u).netloc != base_net:
-                # keep external if it's clearly a profile page? skip for now
-                continue
-        except Exception:
-            continue
-        filtered.append(u)
-    # dedupe while preserving order
-    seen = set()
-    out = []
-    for u in filtered:
-        if u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
+    
+    # Join and clean excessive whitespace
+    content = " ".join(texts)
+    
+    # Remove language keywords and programming-related noise
+    noise_patterns = [
+        r"\bjavascript\b",
+        r"\bjquery\b",
+        r"\bcss\b",
+        r"\bhtml\b",
+        r"\bxml\b",
+        r"\bvar\b",
+        r"\bfunction\b",
+        r"\bwindow\b",
+        r"\bdocument\b",
+        r"\bcookie\b",
+        r"\bsession\b",
+        r"\btitle\b\s*[>:]",
+    ]
+    
+    for pattern in noise_patterns:
+        content = re.sub(pattern, "", content, flags=re.IGNORECASE)
+    
+    # Collapse multiple spaces/newlines
+    content = re.sub(r"\s+", " ", content)
+    content = content.strip()
+    
+    return content
 
 
 def extract_site_documents(url):
+    """
+    Extract and clean HTML text from URL.
+    Returns cleaned text content only (no profile link following).
+    """
     html = fetch_url(url)
     if not html:
         return None
-    soup = BeautifulSoup(html, "html.parser")
-    main_text = visible_text_from_soup(soup)
-    profiles = find_profile_links(soup, url)
-    profile_texts = []
-    for p in profiles:
-        if p == url:
-            continue
-        html_p = fetch_url(p)
-        if not html_p:
-            continue
-        soup_p = BeautifulSoup(html_p, "html.parser")
-        profile_texts.append({"url": p, "text": visible_text_from_soup(soup_p)})
-    return {"page_url": url, "page_text": main_text, "profiles": profile_texts}
+    
+    # Clean the HTML and extract text
+    cleaned_text = clean_text_content(html)
+    
+    return {
+        "page_url": url,
+        "page_text": cleaned_text
+    }
 
 
-def init_llm(model_name="google/flan-t5-small"):
+def init_llm(model_name="meta-llama/Llama-3.2-3B-Instruct"):
+    """Initialize Llama-3.2-3B model for text generation."""
     if not TF_AVAILABLE:
         return None
     try:
-        # small model to keep resource needs low
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        pipe = pipeline("text2text-generation", model=model, tokenizer=tokenizer)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto",
+            device_map="auto"
+        )
+        pipe = TextGenerationPipeline(model=model, tokenizer=tokenizer)
         return pipe
     except Exception as e:
         print(f"Failed to initialize model {model_name}: {e}")
         return None
 
 
-def ask_llm_for_json(pipe, site_doc):
-    # Build prompt
-    combined = []
-    combined.append(f"PAGE_URL: {site_doc['page_url']}")
-    combined.append("PAGE_TEXT:\n" + site_doc["page_text"][:4000])
-    for i, p in enumerate(site_doc["profiles"]):
-        combined.append(f"PROFILE_URL: {p['url']}")
-        combined.append("PROFILE_TEXT:\n" + p["text"][:2000])
-    prompt = (
-        "Extract structured information about the people (doctors/staff/providers) found in the following website text. "
-        "Return a single valid JSON array. Each item should be an object with these fields: name, full_bio, age, hometown, education, experience, photo_url. "
-        "If a field is not present set it to null. Use simple strings or arrays for fields. Do not return any extra commentary, only valid JSON.\n\n"
-        + "\n\n".join(combined)
-    )
-    # Flan-T5 benefits from short inputs; we truncated above. Now run generation
+def ask_llm_for_extraction(pipe, cleaned_text, website_url):
+    """
+    Pass cleaned text to Llama-3.2-3B and request structured CSV extraction.
+    Returns a list of dicts matching: website, full_name, full_bio, age, hometown, education, experience, photo_url
+    """
+    if not pipe:
+        return None
+    
+    # Load prompt template
     try:
-        out = pipe(prompt, max_length=1024, do_sample=False)
-        text = out[0]["generated_text"]
-        # Try to find JSON substring
-        m = re.search(r"(\[\s*\{[\s\S]*\}\s*\])", text)
-        if m:
-            candidate = m.group(1)
+        demo_prompt = open("demo_prompt.txt", "r", encoding="utf-8").read()
+    except Exception:
+        demo_prompt = (
+                "Extract ALL doctors from the text below.\n"
+                "Return ONLY a valid JSON array.\n"
+                "Each object must include:\n"
+                " full_name, full_bio, age, hometown, education, experience, photo_url\n"
+                "If missing, use empty string.\n"
+            )
+
+    # Prepare the prompt with cleaned text
+    prompt = f"""{demo_prompt}
+            TEXT TO EXTRACT FROM:
+            {cleaned_text}
+            WEBSITE: {website_url}
+            """
+
+    try:
+        # Generate response from Llama (expecting JSON)
+        outputs = pipe(
+            prompt,
+            max_new_tokens=2048,
+            num_return_sequences=1,
+            do_sample=False,
+            temperature=0.0
+        )
+
+        # Extract generated text
+        if isinstance(outputs, list) and len(outputs) > 0:
+            text = outputs[0].get("generated_text", "")
+            if text is None:
+                text = ""
+            # If the model echoes the prompt, strip it
+            if isinstance(text, str) and text.startswith(prompt):
+                text = text[len(prompt):]
         else:
-            candidate = text.strip()
-        # Ensure it's valid JSON
+            text = str(outputs)
+
+        # Save raw LLM output for debugging
         try:
-            parsed = json.loads(candidate)
-            return parsed
+            safe_site = re.sub(r"[^0-9a-zA-Z]+", "_", str(website_url or "site"))
+            raw_dir = os.path.join("output", "llm_raw")
+            os.makedirs(raw_dir, exist_ok=True)
+            raw_path = os.path.join(raw_dir, f"{safe_site}_response.txt")
+            with open(raw_path, "w", encoding="utf-8") as rf:
+                rf.write(text or "")
         except Exception:
-            # Try to be more forgiving: replace single quotes
-            candidate2 = candidate.replace("'", '"')
+            pass
+
+        # Helper: try to extract JSON substring from text
+        def _find_json_substring(s):
+            if not s or not isinstance(s, str):
+                return None
+            s = s.strip()
+            # Prefer array
+            start = s.find('[')
+            if start != -1:
+                # try to find a matching closing bracket by last ']' occurrence
+                end = s.rfind(']')
+                if end != -1 and end > start:
+                    return s[start:end+1]
+            # fallback to object
+            start = s.find('{')
+            if start != -1:
+                end = s.rfind('}')
+                if end != -1 and end > start:
+                    return s[start:end+1]
+            return None
+
+        json_sub = _find_json_substring(text)
+        people = []
+        if json_sub:
             try:
-                return json.loads(candidate2)
+                parsed = json.loads(json_sub)
             except Exception:
-                print("LLM output could not be parsed as JSON. Returning raw output.")
-                return {"llm_raw": text}
+                parsed = None
+        else:
+            parsed = None
+
+        if parsed is None:
+            # Try a looser JSON load on whole text
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+
+        if parsed is None:
+            print(f"LLM did not return valid JSON for {website_url}")
+            return None
+
+        # Normalize to list
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+
+        expected_keys = ["full_name", "full_bio", "age", "hometown", "education", "experience", "photo_url"]
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            person = {k: str(entry.get(k, "")).strip() if entry.get(k) is not None else "" for k in expected_keys}
+            # Add website from the caller
+            person["website"] = entry.get("website") or website_url
+            people.append(person)
+
+        if people:
+            return people
+
+        print(f"LLM returned JSON but no valid person entries for {website_url}")
+        return None
+
     except Exception as e:
-        print(f"LLM generation failed: {e}")
+        print(f"LLM generation failed for {website_url}: {e}")
         return None
 
 
@@ -248,24 +330,6 @@ def save_output_item(output_path, item):
     # append jsonl line
     with open(output_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(item, ensure_ascii=False) + "\n")
-
-
-def infer_age_from_text(text, current_year=None):
-    # Find graduation year in text (look for 19xx or 20xx)
-    if not text:
-        return ""
-    current_year = current_year or datetime.now().year
-    # capture full year, e.g. 1986, 2003
-    matches = re.findall(r"(19\\d{2}|20\\d{2})", text)
-    grad_year = None
-    for year in matches:
-        year_int = int(year)
-        if 1950 < year_int <= current_year:  # plausible grad years
-            grad_year = year_int
-            break
-    if grad_year:
-        return str(26 + (current_year - grad_year))
-    return ""
 
 
 def write_csv_header(path, fieldnames):
@@ -280,156 +344,118 @@ def append_csv_row(path, fieldnames, row):
         writer.writerow(row)
 
 
-def heuristic_extract_people(site_doc):
-    """
-    Fallback extractor when the LLM output is unavailable or unparseable.
-    Tries to split the visible text into doctor-sized chunks based on 'Dr.' lines.
-    """
-    # Combine main page text + any profile texts
-    texts = [site_doc.get("page_text") or ""]
-    for p in site_doc.get("profiles", []):
-        texts.append(p.get("text") or "")
-    combined = "\n".join(texts)
-    lines = [ln.strip() for ln in combined.splitlines() if ln.strip()]
-
-    people_blocks = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        # Start of a doctor block: contains 'Dr.' and is not clearly a section heading
-        if re.search(r"\bDr\.", line):
-            start = i
-            j = i + 1
-            while j < len(lines):
-                next_line = lines[j]
-                # Stop this block when we hit the next doctor or a clear section heading
-                if re.search(r"\bDr\.", next_line):
-                    break
-                if re.match(
-                    r"^(Hygiene Team|Dental Assisting Team|Business Team|About Us|Contact|Services)\b",
-                    next_line,
-                    re.IGNORECASE,
-                ):
-                    break
-                j += 1
-            people_blocks.append(lines[start:j])
-            i = j
-        else:
-            i += 1
-
-    people = []
-    for block in people_blocks:
-        if not block:
-            continue
-        # Name heuristics:
-        #  - Some pages have 'Dr. John' on one line and 'Hisel' on the next
-        #  - Others have 'Dr. Faisal Mir' on a single line
-        first = block[0]
-        name = first
-        if first.startswith("Dr.") and len(block) >= 2:
-            # If first line is short (e.g. 'Dr. John'), append second line
-            if len(first.split()) <= 2:
-                name = (first + " " + block[1]).strip()
-        # Education lines: anything mentioning University/College/School/graduate
-        edu_lines = [
-            ln
-            for ln in block
-            if re.search(r"(University|College|School of Dentistry|Dental School|graduat)", ln, re.IGNORECASE)
-        ]
-        education = "\n".join(edu_lines)
-        bio_text = "\n".join(block)
-        
-        # Extract experience (years of practice or experience mentions)
-        exp_lines = [
-            ln
-            for ln in block
-            if re.search(r"(year|experience|practice|practicing)", ln, re.IGNORECASE)
-        ]
-        experience = "\n".join(exp_lines)
-        
-        people.append(
-            {
-                "name": name,
-                "bio": bio_text,
-                "education": education,
-                "experience": experience,
-                "hometown": "",
-                "age": "",
-                "photo_url": ""
-            }
-        )
-    return people
-
 def main():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default="team_page/sample_input.csv")
-    parser.add_argument("--output", default="output/team_pages_results.csv")
-    parser.add_argument("--model", default="google/flan-t5-small", help="Transformers model name or 'none' to skip LLM step")
-    parser.add_argument("--save-raw-only", action="store_true", help="Do not call LLM, only save extracted raw text")
+    parser.add_argument("--output", default=f"output/result_{timestamp}.csv")
+    parser.add_argument("--model", default="meta-llama/Llama-3.2-3B-Instruct", help="Model name from Hugging Face Hub")
     args = parser.parse_args()
 
     urls = read_urls_from_csv(args.input)
     print(f"Found {len(urls)} URLs in {args.input}")
-    pipe = None
-    if not args.save_raw_only and args.model.lower() != "none":
-        pipe = init_llm(args.model)
-        if pipe is None:
-            print("LLM unavailable; continuing in raw-only mode.")
+    
+    # Initialize LLM
+    pipe = init_llm(args.model)
+    if pipe is None:
+        print(f"ERROR: Could not initialize LLM model {args.model}")
+        print("Make sure the model is available on Hugging Face Hub and you have sufficient GPU memory.")
+        return
 
-    # Always output CSV
+    # CSV output configuration
     csv_fieldnames = ["website", "full_name", "full_bio", "age", "hometown", "education", "experience", "photo_url"]
     write_csv_header(args.output, csv_fieldnames)
 
+    seen_people = {}  # Track people by (website, name) to avoid duplicates
+    
     for url in urls:
-        print(f"Processing {url}")
+        print(f"\n{'='*80}")
+        print(f"Processing: {url}")
+        print('='*80)
+        
+        # Step 1: Extract HTML text
         site_doc = extract_site_documents(url)
         if not site_doc:
+            print(f"❌ Failed to extract content for {url}")
+            append_csv_row(args.output, csv_fieldnames, {
+                "website": url,
+                "full_name": "",
+                "full_bio": "",
+                "age": "",
+                "hometown": "",
+                "education": "",
+                "experience": "",
+                "photo_url": ""
+            })
             continue
-        people = []
-        if pipe and not args.save_raw_only:
-            llm_result = ask_llm_for_json(pipe, site_doc)
-            if isinstance(llm_result, list):
-                people = llm_result
-        # Fallback: if no LLM people found, use heuristic extraction from visible text
+        
+        cleaned_text = site_doc.get("page_text", "")
+        print(f"✓ Extracted text: {len(cleaned_text)} characters")
+        
+        # Step 2 & 3: Already done in extract_site_documents (cleaning and returning cleaned text)
+        # Step 3b: Save raw cleaned text to file
+        safe_site = re.sub(r"[^0-9a-zA-Z]+", "_", urlparse(url).netloc + urlparse(url).path)
+        raw_path = os.path.join("raw_output", f"{safe_site}.txt")
+        os.makedirs(os.path.dirname(raw_path), exist_ok=True)
+        
+        with open(raw_path, "w", encoding="utf-8") as f:
+            f.write(f"Website: {url}\n")
+            f.write(f"Cleaned Text:\n")
+            f.write("="*80 + "\n")
+            f.write(cleaned_text)
+        
+        print(f"✓ Saved raw cleaned text to: {raw_path}")
+        
+        # Step 4: Pass to Llama-3.2-3B
+        print(f"🔄 Querying Llama-3.2-3B for extraction...")
+        people = ask_llm_for_extraction(pipe, cleaned_text, url)
+        
         if not people:
-            people = heuristic_extract_people(site_doc)
-            # If we *still* have no people, emit a single empty record to keep the site tracked
-            if not people:
-                people = [{}]
+            print(f"⚠ LLM returned no people for {url}")
+            append_csv_row(args.output, csv_fieldnames, {
+                "website": url,
+                "full_name": "",
+                "full_bio": "",
+                "age": "",
+                "hometown": "",
+                "education": "",
+                "experience": "",
+                "photo_url": ""
+            })
+            continue
+        
+        print(f"✓ Extracted {len(people)} person/people")
+        
+        # Step 5: Save/append to CSV
+        wrote_count = 0
         for person in people:
-            # Compose row with the required columns
-            bio = person.get("bio", "") if person else ""
-            education = person.get("education", "") if person else ""
-            experience = person.get("experience", "") if person else ""
-            photo_url = person.get("photo_url", "") if person and "photo_url" in person else ""
+            person_key = (url, person.get("full_name", "").strip())
+            if person_key in seen_people:
+                continue
+            seen_people[person_key] = True
             
             row = {
-                "website": url,
-                "full_name": person.get("name", "") if person else "",
-                "full_bio": bio,
-                "age": infer_age_from_text(education or bio),
-                "hometown": person.get("hometown", "") if person else "",
-                "education": education,
-                "experience": experience,
-                "photo_url": photo_url
+                "website": person.get("website", url),
+                "full_name": person.get("full_name", ""),
+                "full_bio": person.get("full_bio", ""),
+                "age": person.get("age", ""),
+                "hometown": person.get("hometown", ""),
+                "education": person.get("education", ""),
+                "experience": person.get("experience", ""),
+                "photo_url": person.get("photo_url", "")
             }
             append_csv_row(args.output, csv_fieldnames, row)
+            wrote_count += 1
         
-        # Also save raw profile data as before
-        safe = re.sub(r"[^0-9a-zA-Z]+", "_", urlparse(url).netloc + urlparse(url).path)
-        raw_path = os.path.join("output", f"{safe}.txt")
-        os.makedirs(os.path.dirname(raw_path), exist_ok=True)
-        with open(raw_path, "w", encoding="utf-8") as f:
-            f.write("PAGE_URL: " + url + "\n\n")
-            f.write(site_doc["page_text"] or "")
-            f.write("\n\nPROFILES:\n")
-            for p in site_doc["profiles"]:
-                f.write("-----\n")
-                f.write(p["url"] + "\n")
-                f.write(p["text"] or "")
-                f.write("\n")
+        if wrote_count > 0:
+            print(f"✓ Wrote {wrote_count} row(s) to CSV")
+        else:
+            print(f"⚠ No valid rows written")
 
-    print(f"Done. Results written to CSV: {args.output} and raw text files in output/.")
+    print(f"\n{'='*80}")
+    print(f"✓ Done! Results saved to: {args.output}")
+    print(f"✓ Raw cleaned texts saved to: raw_output/")
+    print('='*80)
 
 
 if __name__ == "__main__":
