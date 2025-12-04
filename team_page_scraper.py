@@ -225,7 +225,6 @@ def ask_llm_for_extraction(pipe, cleaned_text, website_url):
     prompt = f"""{demo_prompt}
             TEXT TO EXTRACT FROM:
             {cleaned_text}
-            WEBSITE: {website_url}
             """
 
     try:
@@ -252,9 +251,10 @@ def ask_llm_for_extraction(pipe, cleaned_text, website_url):
         # Save raw LLM output for debugging
         try:
             safe_site = re.sub(r"[^0-9a-zA-Z]+", "_", str(website_url or "site"))
-            raw_dir = os.path.join("output", "llm_raw")
+            # raw_dir = os.path.join("output", "llm_raw")
+            raw_dir = "llm_raw_output"
             os.makedirs(raw_dir, exist_ok=True)
-            raw_path = os.path.join(raw_dir, f"{safe_site}_response.txt")
+            raw_path = os.path.join(raw_dir, f"{safe_site}.txt")
             with open(raw_path, "w", encoding="utf-8") as rf:
                 rf.write(text or "")
         except Exception:
@@ -325,11 +325,11 @@ def ask_llm_for_extraction(pipe, cleaned_text, website_url):
         return None
 
 
-def save_output_item(output_path, item):
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    # append jsonl line
-    with open(output_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(item, ensure_ascii=False) + "\n")
+# def save_output_item(output_path, item):
+#     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+#     # append jsonl line
+#     with open(output_path, "a", encoding="utf-8") as f:
+#         f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
 def write_csv_header(path, fieldnames):
@@ -395,12 +395,12 @@ def main():
         # Step 2 & 3: Already done in extract_site_documents (cleaning and returning cleaned text)
         # Step 3b: Save raw cleaned text to file
         safe_site = re.sub(r"[^0-9a-zA-Z]+", "_", urlparse(url).netloc + urlparse(url).path)
-        raw_path = os.path.join("raw_output", f"{safe_site}.txt")
+        raw_path = os.path.join("raw_html_text", f"{safe_site}.txt")
         os.makedirs(os.path.dirname(raw_path), exist_ok=True)
         
         with open(raw_path, "w", encoding="utf-8") as f:
             f.write(f"Website: {url}\n")
-            f.write(f"Cleaned Text:\n")
+            # f.write(f"Cleaned Text:\n")
             f.write("="*80 + "\n")
             f.write(cleaned_text)
         
