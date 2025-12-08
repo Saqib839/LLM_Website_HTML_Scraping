@@ -51,6 +51,9 @@ def extract_doctors_from_url(ollama_model, url):
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         page_text = response.text
+        print(f"✓ Fetched content from {url} (length: {len(page_text)} characters)")
+        with open(f"raw_html/{url.replace('/', '_').replace(':', '')}.html", "w", encoding="utf-8") as debug_file:
+            debug_file.write(page_text)
     except Exception as e:
         print(f"❌ Failed to fetch {url}: {e}")
         return None
