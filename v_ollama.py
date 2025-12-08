@@ -37,6 +37,33 @@ def read_urls_from_csv(csv_path):
         print(f"❌ Failed to read URLs from {csv_path}: {e}")
     return urls
 
+from bs4 import BeautifulSoup
+
+def extract_visible_text(html_content):
+    # Parse HTML
+    soup = BeautifulSoup(html_content, "html.parser")
+    
+    # Remove all scripts, styles, head, meta, and comments
+    for tag in soup(["script", "style", "head", "meta", "link", "noscript"]):
+        tag.decompose()
+    
+    # Get visible text
+    text = soup.get_text(separator="\n")
+    
+    # Clean multiple blank lines
+    lines = [line.strip() for line in text.splitlines()]
+    visible_text = "\n".join([line for line in lines if line])
+    
+    return visible_text
+
+# Example usage:
+with open("example.html", "r", encoding="utf-8") as f:
+    html_content = f.read()
+
+clean_text = extract_visible_text(html_content)
+print(clean_text)
+
+
 def extract_doctors_from_url(ollama_model, url):
     """
     Fetch page content from URL and extract doctors using Ollama LLM.
@@ -50,16 +77,25 @@ def extract_doctors_from_url(ollama_model, url):
         }
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        page_text = response.text
-        print(f"✓ Fetched content from {url} (length: {len(page_text)} characters)")
-        # Ensure folder exists
+        html_text = response.text
+        print(f"✓ Fetched content from {url} (length: {len(html_text)} characters)")
+        
+        
         os.makedirs("raw_html", exist_ok=True)
         # Make a safe filename from URL
         safe_filename = re.sub(r'[^a-zA-Z0-9_-]', '_', url)
         file_path = f"raw_html/{safe_filename}.html"
         with open(file_path, "w", encoding="utf-8") as debug_file:
-            debug_file.write(page_text)
+            debug_file.write(html_text)
         print(f"✓ Saved raw HTML for {url} → {file_path}")
+
+
+        clean_text = extract_visible_text(html_text)
+        file_path = f"raw_text_cleaned/{safe_filename}.txt"
+        with open(file_path, "w", encoding="utf-8") as debug_file:
+            debug_file.write(clean_text)
+        print(f"✓ Saved cleaned text for {url} → {file_path}")
+
     except Exception as e:
         print(f"❌ Failed to fetch {url}: {e}")
         return None
@@ -74,7 +110,7 @@ def extract_doctors_from_url(ollama_model, url):
 
     all_doctors = []
 
-    for chunk in chunk_text(page_text, chunk_size=1000650):
+    for chunk in chunk_text(clean_text, chunk_size=1000650):
         prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
 
         # ip route | awk '/default/ {print $3}'
