@@ -205,10 +205,7 @@ def process_urls_and_save_csv(api_key, input_csv, output_csv):
 
 
 if __name__ == "__main__":
-    # Load .env file
     load_dotenv()
-
-    # Model
     API_KEY = os.getenv("groq_api_key")
     INPUT_CSV = "team_page/sample_input.csv"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
