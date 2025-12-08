@@ -215,7 +215,6 @@ def process_urls_and_save_csv(ollama_model, input_csv, output_csv):
 
 
 if __name__ == "__main__":
-    OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama2")
     INPUT_CSV = "team_page/sample_input.csv"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     OUTPUT_CSV = f"output/result_ollama_{timestamp}.csv"
