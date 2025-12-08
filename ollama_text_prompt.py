@@ -13,7 +13,7 @@ load_dotenv()
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama2")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
 
-def chunk_text(text, chunk_size=1000650):
+def chunk_text(text, chunk_size=7500):
     """Split text into chunks of words for LLM processing."""
     words = text.split()
     for i in range(0, len(words), chunk_size):
@@ -162,6 +162,8 @@ def extract_doctors_from_url(ollama_model, url):
                 doctor = {k: str(entry.get(k, "")).strip() for k in expected_keys}
                 doctor["website"] = url
                 all_doctors.append(doctor)
+        
+            # pass
 
         except Exception as e:
             print(f"⚠ Ollama API extraction failed for chunk: {e}")
