@@ -4,6 +4,7 @@ import json
 import csv
 import os
 from datetime import datetime
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 # Load .env file
 load_dotenv()
@@ -37,7 +38,6 @@ def read_urls_from_csv(csv_path):
         print(f"❌ Failed to read URLs from {csv_path}: {e}")
     return urls
 
-from bs4 import BeautifulSoup
 
 def extract_visible_text(html_content):
     # Parse HTML
@@ -56,13 +56,6 @@ def extract_visible_text(html_content):
     
     return visible_text
 
-# Example usage:
-with open("example.html", "r", encoding="utf-8") as f:
-    html_content = f.read()
-
-clean_text = extract_visible_text(html_content)
-print(clean_text)
-
 
 def extract_doctors_from_url(ollama_model, url):
     """
@@ -80,8 +73,9 @@ def extract_doctors_from_url(ollama_model, url):
         html_text = response.text
         print(f"✓ Fetched content from {url} (length: {len(html_text)} characters)")
         
-        
+
         os.makedirs("raw_html", exist_ok=True)
+        os.makedirs("raw_text_cleaned", exist_ok=True)
         # Make a safe filename from URL
         safe_filename = re.sub(r'[^a-zA-Z0-9_-]', '_', url)
         file_path = f"raw_html/{safe_filename}.html"
