@@ -52,8 +52,14 @@ def extract_doctors_from_url(ollama_model, url):
         response.raise_for_status()
         page_text = response.text
         print(f"✓ Fetched content from {url} (length: {len(page_text)} characters)")
-        with open(f"raw_html/{url.replace('/', '_').replace(':', '')}.html", "w", encoding="utf-8") as debug_file:
+        # Ensure folder exists
+        os.makedirs("raw_html", exist_ok=True)
+        # Make a safe filename from URL
+        safe_filename = re.sub(r'[^a-zA-Z0-9_-]', '_', url)
+        file_path = f"raw_html/{safe_filename}.html"
+        with open(file_path, "w", encoding="utf-8") as debug_file:
             debug_file.write(page_text)
+        print(f"✓ Saved raw HTML for {url} → {file_path}")
     except Exception as e:
         print(f"❌ Failed to fetch {url}: {e}")
         return None
