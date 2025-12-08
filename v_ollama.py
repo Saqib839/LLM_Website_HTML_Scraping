@@ -4,10 +4,15 @@ import json
 import csv
 import os
 from datetime import datetime
-from groq import Groq
 from dotenv import load_dotenv
+# Load .env file
+load_dotenv()
 
-def chunk_text(text, chunk_size=2000):
+# Model
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama2")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
+
+def chunk_text(text, chunk_size=1000650):
     """Split text into chunks of words for LLM processing."""
     words = text.split()
     for i in range(0, len(words), chunk_size):
@@ -32,9 +37,9 @@ def read_urls_from_csv(csv_path):
         print(f"❌ Failed to read URLs from {csv_path}: {e}")
     return urls
 
-def extract_doctors_from_url(api_key, url):
+def extract_doctors_from_url(ollama_model, url):
     """
-    Fetch page content from URL and extract doctors using Groq LLM.
+    Fetch page content from URL and extract doctors using Ollama LLM.
     Handles token limits by chunking the text.
     """
     try:
@@ -58,22 +63,27 @@ def extract_doctors_from_url(api_key, url):
         "If missing, use empty string.\n"
     )
 
-    client = Groq(api_key=api_key)
     all_doctors = []
 
-    for chunk in chunk_text(page_text, chunk_size=650):
+    for chunk in chunk_text(page_text, chunk_size=1000650):
         prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
-        try:
-            completion = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.6,
-                max_completion_tokens=1024,
-                top_p=1,
-                stream=False
-            )
 
-            text = completion.choices[0].message.content
+        # ip route | awk '/default/ {print $3}'
+
+        try:
+            response = requests.post(
+                f"http://{OLLAMA_HOST}:11434/api/generate",
+                json={
+                    "model": ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "temperature": 0.6,
+                },
+                timeout=60
+            )
+            response.raise_for_status()
+            result = response.json()
+            text = result.get("response", "")
 
             if text.startswith(prompt):
                 text = text[len(prompt):]
@@ -115,7 +125,7 @@ def extract_doctors_from_url(api_key, url):
                 all_doctors.append(doctor)
 
         except Exception as e:
-            print(f"⚠ Groq API extraction failed for chunk: {e}")
+            print(f"⚠ Ollama API extraction failed for chunk: {e}")
             continue
 
     return all_doctors if all_doctors else None
@@ -144,7 +154,7 @@ def append_to_csv(csv_path, fieldnames, rows):
     
     print(f"✓ Appended {len(rows)} row(s) to {csv_path}")
 
-def process_urls_and_save_csv(api_key, input_csv, output_csv):
+def process_urls_and_save_csv(ollama_model, input_csv, output_csv):
     """
     Process each URL from input CSV one by one and append results to output CSV.
     """
@@ -166,7 +176,7 @@ def process_urls_and_save_csv(api_key, input_csv, output_csv):
         print('='*80)
         
         # Extract doctors from URL
-        doctors = extract_doctors_from_url(api_key, url)
+        doctors = extract_doctors_from_url(ollama_model, url)
         
         if not doctors:
             print(f"⚠ No doctors extracted from {url}")
@@ -205,14 +215,10 @@ def process_urls_and_save_csv(api_key, input_csv, output_csv):
 
 
 if __name__ == "__main__":
-    # Load .env file
-    load_dotenv()
-
-    # Model
-    API_KEY = os.getenv("groq_api_key")
+    OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama2")
     INPUT_CSV = "team_page/sample_input.csv"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    OUTPUT_CSV = f"output/result_groq_{timestamp}.csv"
+    OUTPUT_CSV = f"output/result_ollama_{timestamp}.csv"
     
-    process_urls_and_save_csv(API_KEY, INPUT_CSV, OUTPUT_CSV)
+    process_urls_and_save_csv(OLLAMA_MODEL, INPUT_CSV, OUTPUT_CSV)
 
