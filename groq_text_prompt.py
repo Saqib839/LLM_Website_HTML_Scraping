@@ -6,8 +6,9 @@ import os
 from datetime import datetime
 from groq import Groq
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 
-def chunk_text(text, chunk_size=2000):
+def chunk_text(text, chunk_size=20000):
     """Split text into chunks of words for LLM processing."""
     words = text.split()
     for i in range(0, len(words), chunk_size):
@@ -32,6 +33,23 @@ def read_urls_from_csv(csv_path):
         print(f"❌ Failed to read URLs from {csv_path}: {e}")
     return urls
 
+def extract_visible_text(html_content):
+    # Parse HTML
+    soup = BeautifulSoup(html_content, "html.parser")
+    
+    # Remove all scripts, styles, head, meta, and comments
+    for tag in soup(["script", "style", "head", "meta", "link", "noscript"]):
+        tag.decompose()
+    
+    # Get visible text
+    text = soup.get_text(separator="\n")
+    
+    # Clean multiple blank lines
+    lines = [line.strip() for line in text.splitlines()]
+    visible_text = "\n".join([line for line in lines if line])
+    
+    return visible_text
+
 def extract_doctors_from_url(api_key, url):
     """
     Fetch page content from URL and extract doctors using Groq LLM.
@@ -45,7 +63,9 @@ def extract_doctors_from_url(api_key, url):
         }
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        page_text = response.text
+        html_text = response.text
+        # print(html_text)
+        page_text = extract_visible_text(html_text)
     except Exception as e:
         print(f"❌ Failed to fetch {url}: {e}")
         return None
@@ -55,68 +75,104 @@ def extract_doctors_from_url(api_key, url):
         "Return ONLY a valid JSON array.\n"
         "Each object must include:\n"
         " full_name, full_bio, age, hometown, education, experience, photo_url\n"
-        "If missing, use empty string.\n"
+        "If missing, use empty string. And remember do not trim any field\n"
     )
 
     client = Groq(api_key=api_key)
     all_doctors = []
 
-    for chunk in chunk_text(page_text, chunk_size=650):
-        prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
-        try:
-            completion = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.6,
-                max_completion_tokens=1024,
-                top_p=1,
-                stream=False
-            )
 
-            text = completion.choices[0].message.content
+    if len(page_text) < 30000:
+        for chunk in chunk_text(page_text, chunk_size=20000):
+            print(f"Processing chunk of size {len(chunk)}")
+            prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
+            try:
+                # completion = client.chat.completions.create(
+                #     model="llama-3.1-8b-instant",
+                #     messages=[{"role": "user", "content": prompt}],
+                #     temperature=0.6,
+                #     max_completion_tokens=1024,
+                #     top_p=1,
+                #     stream=False
+                # )
+                # completion = client.chat.completions.create(
+                #     model="qwen/qwen3-32b",
+                #     messages=[
+                #     {
+                #         "role": "user",
+                #         "content": prompt
+                #     }
+                #     ],
+                #     temperature=0.6,
+                #     max_completion_tokens=4096,
+                #     top_p=0.95,
+                #     reasoning_effort="default",
+                #     stream=False,
+                #     stop=None
+                # )
+                completion = client.chat.completions.create(
+                    model="openai/gpt-oss-120b",
+                    messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                    ],
+                    temperature=1,
+                    max_completion_tokens=8192,
+                    top_p=1,
+                    reasoning_effort="medium",
+                    stream=False,
+                    stop=None
+                )
 
-            if text.startswith(prompt):
-                text = text[len(prompt):]
+                text = completion.choices[0].message.content
 
-            def _extract_json(s):
-                if not s:
+                if text.startswith(prompt):
+                    text = text[len(prompt):]
+
+                def _extract_json(s):
+                    if not s:
+                        return None
+                    s = s.strip()
+                    for start_char, end_char in [('[', ']'), ('{', '}')]:
+                        start = s.find(start_char)
+                        end = s.rfind(end_char)
+                        if start != -1 and end != -1 and end > start:
+                            return s[start:end+1]
                     return None
-                s = s.strip()
-                for start_char, end_char in [('[', ']'), ('{', '}')]:
-                    start = s.find(start_char)
-                    end = s.rfind(end_char)
-                    if start != -1 and end != -1 and end > start:
-                        return s[start:end+1]
-                return None
 
-            json_sub = _extract_json(text)
-            parsed = None
-            if json_sub:
-                try:
-                    parsed = json.loads(json_sub)
-                except json.JSONDecodeError:
-                    pass
+                json_sub = _extract_json(text)
+                parsed = None
+                if json_sub:
+                    try:
+                        parsed = json.loads(json_sub)
+                    except json.JSONDecodeError:
+                        pass
 
-            if parsed is None:
-                try:
-                    parsed = json.loads(text)
-                except json.JSONDecodeError:
-                    continue
+                if parsed is None:
+                    try:
+                        parsed = json.loads(text)
+                    except json.JSONDecodeError:
+                        continue
 
-            if isinstance(parsed, dict):
-                parsed = [parsed]
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
 
-            expected_keys = ["full_name", "full_bio", "age", "hometown", "education", "experience", "photo_url"]
-            for entry in parsed:
-                if not isinstance(entry, dict):
-                    continue
-                doctor = {k: str(entry.get(k, "")).strip() for k in expected_keys}
-                doctor["website"] = url
-                all_doctors.append(doctor)
+                expected_keys = ["full_name", "full_bio", "age", "hometown", "education", "experience", "photo_url"]
+                for entry in parsed:
+                    if not isinstance(entry, dict):
+                        continue
+                    doctor = {k: str(entry.get(k, "")).strip() for k in expected_keys}
+                    doctor["website"] = url
+                    all_doctors.append(doctor)
 
-        except Exception as e:
-            print(f"⚠ Groq API extraction failed for chunk: {e}")
-            continue
+            except Exception as e:
+                print(f"⚠ Groq API extraction failed for chunk: {e}")
+                continue
+    else:
+        print(f"Too long page text {len(page_text)}, skipping.")
+        return None
 
     return all_doctors if all_doctors else None
 
@@ -167,7 +223,7 @@ def process_urls_and_save_csv(api_key, input_csv, output_csv):
         
         # Extract doctors from URL
         doctors = extract_doctors_from_url(api_key, url)
-        
+
         if not doctors:
             print(f"⚠ No doctors extracted from {url}")
             # Still append an empty row to track this URL
