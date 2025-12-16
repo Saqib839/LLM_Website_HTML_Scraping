@@ -4,7 +4,7 @@ import json
 import csv
 import os
 from datetime import datetime
-from groq import Groq
+import openai
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 
@@ -52,7 +52,7 @@ def extract_visible_text(html_content):
 
 def extract_doctors_from_url(api_key, url):
     """
-    Fetch page content from URL and extract doctors using Groq LLM.
+    Fetch page content from URL and extract doctors using OpenAI LLM.
     Handles token limits by chunking the text.
     """
     try:
@@ -78,7 +78,8 @@ def extract_doctors_from_url(api_key, url):
         "If missing, use empty string. And remember do not trim any field\n"
     )
 
-    client = Groq(api_key=api_key)
+    # Configure OpenAI key for this request
+    openai.api_key = api_key
     all_doctors = []
 
 
@@ -87,46 +88,16 @@ def extract_doctors_from_url(api_key, url):
             print(f"Processing chunk of size {len(chunk)}")
             prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
             try:
-                # completion = client.chat.completions.create(
-                #     model="llama-3.1-8b-instant",
-                #     messages=[{"role": "user", "content": prompt}],
-                #     temperature=0.6,
-                #     max_completion_tokens=1024,
-                #     top_p=1,
-                #     stream=False
-                # )
-                # completion = client.chat.completions.create(
-                #     model="qwen/qwen3-32b",
-                #     messages=[
-                #     {
-                #         "role": "user",
-                #         "content": prompt
-                #     }
-                #     ],
-                #     temperature=0.6,
-                #     max_completion_tokens=4096,
-                #     top_p=0.95,
-                #     reasoning_effort="default",
-                #     stream=False,
-                #     stop=None
-                # )
-                completion = client.chat.completions.create(
-                    model="openai/gpt-oss-120b",
-                    messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                    ],
-                    temperature=1,
-                    max_completion_tokens=8192,
-                    top_p=1,
-                    reasoning_effort="medium",
-                    stream=False,
-                    stop=None
+                # Use OpenAI chat completions
+                response = openai.ChatCompletion.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.6,
+                    max_tokens=4096,
+                    top_p=1
                 )
 
-                text = completion.choices[0].message.content
+                text = response.choices[0].message.content
 
                 if text.startswith(prompt):
                     text = text[len(prompt):]
@@ -168,7 +139,7 @@ def extract_doctors_from_url(api_key, url):
                     all_doctors.append(doctor)
 
             except Exception as e:
-                print(f"⚠ Groq API extraction failed for chunk: {e}")
+                print(f"⚠ OpenAI API extraction failed for chunk: {e}")
                 continue
     else:
         print(f"Too long page text {len(page_text)}, skipping.")
@@ -262,10 +233,13 @@ def process_urls_and_save_csv(api_key, input_csv, output_csv):
 
 if __name__ == "__main__":
     load_dotenv()
-    API_KEY = os.getenv("groq_api_key")
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    if not API_KEY:
+        print("❌ OPENAI_API_KEY not set. Please add it to your environment or .env file.")
+        exit(1)
     INPUT_CSV = "input.csv"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    OUTPUT_CSV = f"output/result_groq_{timestamp}.csv"
+    OUTPUT_CSV = f"output/result_openai_{timestamp}.csv"
     
     process_urls_and_save_csv(API_KEY, INPUT_CSV, OUTPUT_CSV)
 
