@@ -4,7 +4,7 @@ import json
 import csv
 import os
 from datetime import datetime
-import openai
+from openai import OpenAI
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 
@@ -79,22 +79,17 @@ def extract_doctors_from_url(api_key, url):
     )
 
     # Configure OpenAI key for this request
-    openai.api_key = api_key
     all_doctors = []
-
+    client = OpenAI(api_key=api_key)
 
     if len(page_text) < 30000:
         for chunk in chunk_text(page_text, chunk_size=20000):
             print(f"Processing chunk of size {len(chunk)}")
             prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
             try:
-                # Use OpenAI chat completions
-                response = openai.ChatCompletion.create(
+                response = client.chat.completions.create(
                     model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.6,
-                    max_tokens=4096,
-                    top_p=1
+                    messages=[{"role": "user", "content": prompt}]
                 )
 
                 text = response.choices[0].message.content
@@ -237,7 +232,7 @@ if __name__ == "__main__":
     if not API_KEY:
         print("❌ OPENAI_API_KEY not set. Please add it to your environment or .env file.")
         exit(1)
-    INPUT_CSV = "input.csv"
+    INPUT_CSV = "team_page/sample_input.csv"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     OUTPUT_CSV = f"output/result_openai_{timestamp}.csv"
     
