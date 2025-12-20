@@ -65,6 +65,18 @@ def extract_doctors_from_url(api_key, url):
         response.raise_for_status()
         html_text = response.text
         # print(html_text)
+
+
+        os.makedirs("raw_html", exist_ok=True)
+        # Make a safe filename from URL
+        safe_filename = re.sub(r'[^a-zA-Z0-9_-]', '_', url)
+        file_path = f"raw_html/{safe_filename}.html"
+        with open(file_path, "w", encoding="utf-8") as debug_file:
+            debug_file.write(html_text)
+        print(f"✓ Saved raw HTML for {url} → {file_path}")
+
+
+
         page_text = extract_visible_text(html_text)
     except Exception as e:
         print(f"❌ Failed to fetch {url}: {e}")
@@ -74,71 +86,76 @@ def extract_doctors_from_url(api_key, url):
         "Extract ALL doctors from the text below.\n"
         "Return ONLY a valid JSON array.\n"
         "Each object must include:\n"
-        " full_name, full_bio, age, hometown, education, experience, photo_url\n"
-        "If missing, use empty string. And remember do not trim any field\n"
+        "  full_name, full_bio, age, hometown, education, graduation_year, designation, photo_url\n"
+        "Rules:\n"
+        "  - If any of field is missing, use empty string.\n"
+        "  - Determine designation as 'Owner' or 'Associate' using the weighted score below:\n"
+        "      a) Name prominence across the text.\n"
+        "      b) Listing order (earlier listed gets higher weight).\n"
+        "      Highest score → Owner, others → Associate.\n"
     )
 
     # Configure OpenAI key for this request
     all_doctors = []
-    client = OpenAI(api_key=api_key)
+    # client = OpenAI(api_key=api_key)
 
-    if len(page_text) < 30000:
-        for chunk in chunk_text(page_text, chunk_size=20000):
-            print(f"Processing chunk of size {len(chunk)}")
-            prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}]
-                )
+    # if len(page_text) < 30000:
+    #     for chunk in chunk_text(page_text, chunk_size=20000):
+    #         print(f"Processing chunk of size {len(chunk)}")
+    #         prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
+    #         try:
+    #             response = client.chat.completions.create(
+    #                 model="gpt-4o-mini",
+    #                 messages=[{"role": "user", "content": prompt}]
+    #             )
 
-                text = response.choices[0].message.content
+    #             text = response.choices[0].message.content
 
-                if text.startswith(prompt):
-                    text = text[len(prompt):]
+    #             if text.startswith(prompt):
+    #                 text = text[len(prompt):]
 
-                def _extract_json(s):
-                    if not s:
-                        return None
-                    s = s.strip()
-                    for start_char, end_char in [('[', ']'), ('{', '}')]:
-                        start = s.find(start_char)
-                        end = s.rfind(end_char)
-                        if start != -1 and end != -1 and end > start:
-                            return s[start:end+1]
-                    return None
+    #             def _extract_json(s):
+    #                 if not s:
+    #                     return None
+    #                 s = s.strip()
+    #                 for start_char, end_char in [('[', ']'), ('{', '}')]:
+    #                     start = s.find(start_char)
+    #                     end = s.rfind(end_char)
+    #                     if start != -1 and end != -1 and end > start:
+    #                         return s[start:end+1]
+    #                 return None
 
-                json_sub = _extract_json(text)
-                parsed = None
-                if json_sub:
-                    try:
-                        parsed = json.loads(json_sub)
-                    except json.JSONDecodeError:
-                        pass
+    #             json_sub = _extract_json(text)
+    #             parsed = None
+    #             if json_sub:
+    #                 try:
+    #                     parsed = json.loads(json_sub)
+    #                 except json.JSONDecodeError:
+    #                     pass
 
-                if parsed is None:
-                    try:
-                        parsed = json.loads(text)
-                    except json.JSONDecodeError:
-                        continue
+    #             if parsed is None:
+    #                 try:
+    #                     parsed = json.loads(text)
+    #                 except json.JSONDecodeError:
+    #                     continue
 
-                if isinstance(parsed, dict):
-                    parsed = [parsed]
+    #             if isinstance(parsed, dict):
+    #                 parsed = [parsed]
 
-                expected_keys = ["full_name", "full_bio", "age", "hometown", "education", "experience", "photo_url"]
-                for entry in parsed:
-                    if not isinstance(entry, dict):
-                        continue
-                    doctor = {k: str(entry.get(k, "")).strip() for k in expected_keys}
-                    doctor["website"] = url
-                    all_doctors.append(doctor)
+    #             expected_keys = ["full_name", "full_bio", "age", "hometown", "education", "graduation_year", "designation", "photo_url"]
+    #             for entry in parsed:
+    #                 if not isinstance(entry, dict):
+    #                     continue
+    #                 doctor = {k: str(entry.get(k, "")).strip() for k in expected_keys}
+    #                 doctor["website"] = url
+    #                 all_doctors.append(doctor)
 
-            except Exception as e:
-                print(f"⚠ OpenAI API extraction failed for chunk: {e}")
-                continue
-    else:
-        print(f"Too long page text {len(page_text)}, skipping.")
-        return None
+    #         except Exception as e:
+    #             print(f"⚠ OpenAI API extraction failed for chunk: {e}")
+    #             continue
+    # else:
+    #     print(f"Too long page text {len(page_text)}, skipping.")
+    #     return None
 
     return all_doctors if all_doctors else None
 
@@ -175,7 +192,7 @@ def process_urls_and_save_csv(api_key, input_csv, output_csv):
         print("❌ No URLs found!")
         return
     
-    fieldnames = ["website", "full_name", "full_bio", "age", "hometown", "education", "experience", "photo_url"]
+    fieldnames = ["website", "full_name", "full_bio", "age", "hometown", "education", "graduation_year", "designation", "photo_url"]
     
     # Initialize output CSV
     write_csv_header(output_csv, fieldnames)
@@ -200,7 +217,8 @@ def process_urls_and_save_csv(api_key, input_csv, output_csv):
                 "age": "",
                 "hometown": "",
                 "education": "",
-                "experience": "",
+                "graduation_year": "",
+                "designation": "",
                 "photo_url": ""
             }])
             continue

@@ -38,11 +38,21 @@ def read_urls_from_csv(csv_path):
 def extract_doctors_from_url(ollama_model, url):
 
     demo_prompt = (
-        "Extract ALL doctors from the url below.\n"
+        "Extract ALL doctors from the website at the URL below.\n"
         "Return ONLY a valid JSON array.\n"
         "Each object must include:\n"
-        " full_name, full_bio, age, hometown, education, experience, photo_url\n"
-        "If missing, use empty string.\n"
+        "  full_name, full_bio, age, hometown, education, designation, photo_url\n"
+        "Rules:\n"
+        "  - If graduation year is mentioned in bio, calculate age as 26 + (current_year - graduation_year). Otherwise, use empty string.\n"
+        "  - If hometown, education, or photo_url is missing, use empty string.\n"
+        "  - Determine designation as 'Owner' or 'Associate' using the following logic:\n"
+        "      1. If only one doctor → Owner.\n"
+        "      2. If practice name contains a doctor's last name → Owner.\n"
+        "      3. Otherwise, compute weighted score based on:\n"
+        "         a) Name prominence across the website.\n"
+        "         b) Listing order (earlier listed gets higher weight).\n"
+        "         c) Likely owner age range (35-55 years).\n"
+        "         Highest score → Owner, others → Associate.\n"
     )
 
     all_doctors = []
