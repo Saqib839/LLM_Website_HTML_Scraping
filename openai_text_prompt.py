@@ -67,15 +67,13 @@ def extract_doctors_from_url(api_key, url):
         # print(html_text)
 
 
-        os.makedirs("raw_html", exist_ok=True)
-        # Make a safe filename from URL
-        safe_filename = re.sub(r'[^a-zA-Z0-9_-]', '_', url)
-        file_path = f"raw_html/{safe_filename}.html"
-        with open(file_path, "w", encoding="utf-8") as debug_file:
-            debug_file.write(html_text)
-        print(f"✓ Saved raw HTML for {url} → {file_path}")
-
-
+        # os.makedirs("raw_html", exist_ok=True)
+        # # Make a safe filename from URL
+        # safe_filename = re.sub(r'[^a-zA-Z0-9_-]', '_', url)
+        # file_path = f"raw_html/{safe_filename}.html"
+        # with open(file_path, "w", encoding="utf-8") as debug_file:
+        #     debug_file.write(html_text)
+        # print(f"✓ Saved raw HTML for {url} → {file_path}")
 
         page_text = extract_visible_text(html_text)
     except Exception as e:
