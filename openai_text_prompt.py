@@ -97,65 +97,65 @@ def extract_doctors_from_url(api_key, url):
 
     # Configure OpenAI key for this request
     all_doctors = []
-    # client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key)
 
-    # if len(page_text) < 30000:
-    #     for chunk in chunk_text(page_text, chunk_size=20000):
-    #         print(f"Processing chunk of size {len(chunk)}")
-    #         prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
-    #         try:
-    #             response = client.chat.completions.create(
-    #                 model="gpt-4o-mini",
-    #                 messages=[{"role": "user", "content": prompt}]
-    #             )
+    if len(page_text) < 30000:
+        for chunk in chunk_text(page_text, chunk_size=20000):
+            print(f"Processing chunk of size {len(chunk)}")
+            prompt = f"{demo_prompt}\nTEXT TO EXTRACT FROM:\n{chunk}"
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}]
+                )
 
-    #             text = response.choices[0].message.content
+                text = response.choices[0].message.content
 
-    #             if text.startswith(prompt):
-    #                 text = text[len(prompt):]
+                if text.startswith(prompt):
+                    text = text[len(prompt):]
 
-    #             def _extract_json(s):
-    #                 if not s:
-    #                     return None
-    #                 s = s.strip()
-    #                 for start_char, end_char in [('[', ']'), ('{', '}')]:
-    #                     start = s.find(start_char)
-    #                     end = s.rfind(end_char)
-    #                     if start != -1 and end != -1 and end > start:
-    #                         return s[start:end+1]
-    #                 return None
+                def _extract_json(s):
+                    if not s:
+                        return None
+                    s = s.strip()
+                    for start_char, end_char in [('[', ']'), ('{', '}')]:
+                        start = s.find(start_char)
+                        end = s.rfind(end_char)
+                        if start != -1 and end != -1 and end > start:
+                            return s[start:end+1]
+                    return None
 
-    #             json_sub = _extract_json(text)
-    #             parsed = None
-    #             if json_sub:
-    #                 try:
-    #                     parsed = json.loads(json_sub)
-    #                 except json.JSONDecodeError:
-    #                     pass
+                json_sub = _extract_json(text)
+                parsed = None
+                if json_sub:
+                    try:
+                        parsed = json.loads(json_sub)
+                    except json.JSONDecodeError:
+                        pass
 
-    #             if parsed is None:
-    #                 try:
-    #                     parsed = json.loads(text)
-    #                 except json.JSONDecodeError:
-    #                     continue
+                if parsed is None:
+                    try:
+                        parsed = json.loads(text)
+                    except json.JSONDecodeError:
+                        continue
 
-    #             if isinstance(parsed, dict):
-    #                 parsed = [parsed]
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
 
-    #             expected_keys = ["full_name", "full_bio", "age", "hometown", "education", "graduation_year", "designation", "photo_url"]
-    #             for entry in parsed:
-    #                 if not isinstance(entry, dict):
-    #                     continue
-    #                 doctor = {k: str(entry.get(k, "")).strip() for k in expected_keys}
-    #                 doctor["website"] = url
-    #                 all_doctors.append(doctor)
+                expected_keys = ["full_name", "full_bio", "age", "hometown", "education", "graduation_year", "designation", "photo_url"]
+                for entry in parsed:
+                    if not isinstance(entry, dict):
+                        continue
+                    doctor = {k: str(entry.get(k, "")).strip() for k in expected_keys}
+                    doctor["website"] = url
+                    all_doctors.append(doctor)
 
-    #         except Exception as e:
-    #             print(f"⚠ OpenAI API extraction failed for chunk: {e}")
-    #             continue
-    # else:
-    #     print(f"Too long page text {len(page_text)}, skipping.")
-    #     return None
+            except Exception as e:
+                print(f"⚠ OpenAI API extraction failed for chunk: {e}")
+                continue
+    else:
+        print(f"Too long page text {len(page_text)}, skipping.")
+        return None
 
     return all_doctors if all_doctors else None
 
